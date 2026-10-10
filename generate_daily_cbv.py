@@ -51,7 +51,9 @@ def result_rows(summary, include_other):
     for row in summary["rows"]:
         component = row.get("component") or "(unset)"
         group = groups.setdefault(component, {"total": 0, "pass": 0, "fail": 0,
-                                              "blocked": 0, "optimized": 0, "other": 0})
+                                              "blocked": 0, "optimized": 0, "other": 0,
+                                              "rows": []})
+        group["rows"].append(row)
         group["total"] += 1
         if row["status_reason"] == "complete.optimized":
             group["optimized"] += 1
@@ -61,11 +63,27 @@ def result_rows(summary, include_other):
             group["other"] += 1
 
     rows = []
-    for component, counts in sorted(groups.items(), key=lambda item: item[0].lower()):
+    sorted_groups = sorted(groups.items(), key=lambda item: item[0].lower())
+    for component, counts in sorted_groups:
         other_cell = f"<td>{counts['other']}</td>" if include_other else ""
+        test_cases = []
+        for row in counts["rows"]:
+            tc_id = esc(row.get("tc_id"))
+            tc_url = f"https://hsdes.intel.com/appstore/article/#/article/{tc_id}"
+            title = esc(row.get("title"))
+            status = esc(row.get("status_reason") or row.get("bucket"))
+            test_cases.append(
+                f'<li><a href="{tc_url}" target="_blank" rel="noopener">{tc_id}</a>'
+                f" {title} <small>{status}</small></li>"
+            )
+        component_html = (
+            '<details class="component-details">'
+            f'<summary>{esc(component)} <span>({len(counts["rows"])} TCs)</span></summary>'
+            f'<ul class="tc-list">{"".join(test_cases)}</ul></details>'
+        )
         rows.append(
             "<tr>"
-            f"<td>{esc(component)}</td>"
+            f"<td>{component_html}</td>"
             f"<td>{counts['pass']}/{counts['total']}</td>"
             f"<td>{pct(counts['pass'], counts['total'])}</td>"
             f"<td>{counts['fail']}</td>"
@@ -108,33 +126,44 @@ def build_html(summary, source_url):
     other = max(0, summary["other_complete"] - optimized) + summary["rejected"]
     cycle = summary["cycle"]
     milestone = summary.get("milestone") or {}
-    generated = datetime.now().astimezone().strftime("%b %d, %Y %H:%M %Z")
-    title = cycle.split("_")[-2] if "_" in cycle else cycle
-    version_match = re.search(r"\d{4}\.D\d+", cycle)
-    version = version_match.group(0) if version_match else ""
-    report_title = f"Daily_{title}_{version}" if version else f"Daily_{title}"
+    report_match = re.search(r"(\d{4}\.D\d+)(?:_(\d{2}WW\d+\.\d+))?", cycle)
+    version = report_match.group(1) if report_match else ""
+    week = report_match.group(2) if report_match else ""
+    report_title = "Daily_CBV"
+    report_suffix = ""
+    if version:
+        report_suffix += version
+    if week:
+        report_suffix += f"_{week}"
+    full_report_title = report_title + report_suffix
     source_url = source_url if source_url.startswith(("https://", "http://")) else ""
     open_link = (
         f'<a class="action" href="{esc(source_url)}" target="_blank" rel="noopener">'
         "Open Full Report</a>" if source_url else ""
     )
+    cycle_value = (
+        f'<a href="{esc(source_url)}" target="_blank" rel="noopener">View cycle</a>'
+        if source_url else esc(cycle)
+    )
     owner = milestone.get("owner") or "Not available"
 
     cards = [
-        ("Cases", total, "planned test cases", "neutral"),
-        ("Passed", passed, f"{pct(passed, total)} pass rate", "good"),
-        ("Failed", failed, f"{pct(failed, total)} fail rate", "bad"),
-        ("Blocked", blocked, f"{pct(blocked, total)} of total", "warn"),
-        ("Optimized", optimized, "complete.optimized", "neutral"),
-        ("Not run", not_run, "no result recorded", "neutral"),
+        ("Passed", passed, "good"),
+        ("Failed", failed, "bad"),
+        ("Blocked", blocked, "warn"),
+        ("Optimized", optimized, "neutral"),
+        ("Not run", not_run, "neutral"),
     ]
     if other:
-        cards.insert(5, ("Other complete", other, "other completed statuses", "neutral"))
+        cards.insert(5, ("Other complete", other, "neutral"))
     other_header = "<th>Other Complete</th>" if other else ""
     card_html = "".join(
-        f'<div class="metric {kind}"><strong>{value}</strong><span>{esc(label)}</span>'
-        f"<small>{esc(note)}</small></div>"
-        for label, value, note, kind in cards
+        f'<div class="metric {kind}"><strong>{value}</strong><span>{esc(label)}</span></div>'
+        for label, value, kind in cards
+    )
+    planned_html = (
+        f'<section class="planned" aria-label="Planned Test Cases">'
+        f'<strong>{total}</strong><span>Planned Test Cases</span></section>'
     )
 
     return f'''<!doctype html>
@@ -142,7 +171,7 @@ def build_html(summary, source_url):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Daily CBV - {esc(version or title)}</title>
+<title>{esc(full_report_title)}</title>
 <style>
 :root{{--ink:#192332;--muted:#5e6c7e;--line:#d3dce6;--blue:#075c91;--pale:#f4f7fa;
 --green:#168044;--green-bg:#e8f5ed;--red:#c5221f;--red-bg:#fff0ef;--amber:#8c5c00;--amber-bg:#fff4d8}}
@@ -157,16 +186,18 @@ main{{padding:22px 28px 24px}}
 h2{{font-size:16px;margin:0;font-weight:650}}
 .action{{display:inline-block;background:#0873b9;color:white;text-decoration:none;font-weight:650;
 padding:9px 14px;border:1px solid #075c91;white-space:nowrap}}
+.planned{{display:flex;align-items:baseline;gap:9px;margin:0 4px 10px}}
+.planned strong{{font-size:23px;line-height:1.15}}
+.planned span{{font-size:23px;font-weight:700;color:var(--green)}}
 .metrics{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin:0 4px 28px}}
 .metric{{min-height:76px;background:var(--pale);display:flex;flex-direction:column;align-items:center;
 justify-content:center;padding:9px 6px;text-align:center}}
 .metric strong{{font-size:23px;line-height:1.15}}
 .metric span{{font-size:11px;color:var(--muted);margin-top:3px}}
-.metric small{{font-size:10px;color:var(--muted)}}
 .metric.good{{background:var(--green-bg);color:var(--green)}}
-.metric.good span,.metric.good small{{color:var(--green)}}
+.metric.good span{{color:var(--green)}}
 .metric.bad{{background:var(--red-bg);color:var(--red)}}
-.metric.bad span,.metric.bad small{{color:var(--red)}}
+.metric.bad span{{color:var(--red)}}
 .metric.warn{{background:var(--amber-bg);color:var(--amber)}}
 .meta{{display:grid;grid-template-columns:1fr 1fr;gap:15px 28px;margin:0 4px 10px}}
 .meta div{{display:grid;grid-template-columns:140px minmax(0,1fr);gap:10px;align-items:start}}
@@ -174,6 +205,12 @@ justify-content:center;padding:9px 6px;text-align:center}}
 .meta dd{{margin:0;overflow-wrap:anywhere}}
 .detail{{background:#f7f9fb;border-top:1px solid var(--line);padding:20px 28px 24px}}
 .detail h2{{margin:0 0 12px}}
+.component-details summary{{cursor:pointer;font-weight:650}}
+.component-details summary span{{font-size:11px;font-weight:400;color:var(--muted);white-space:nowrap}}
+.tc-list{{margin:8px 0 2px;padding-left:18px;min-width:240px}}
+.tc-list li{{padding:3px 0;overflow-wrap:anywhere}}
+.tc-list a{{white-space:nowrap}}
+.tc-list small{{color:var(--muted)}}
 table{{width:100%;border-collapse:collapse;font-size:12px}}
 th{{background:#e2edf7;color:#26384a;font-weight:700}}
 th,td{{padding:7px 9px;text-align:left;border-bottom:1px solid #e1e7ed}}
@@ -189,12 +226,13 @@ footer{{border-top:1px solid var(--line);padding:14px 28px;color:var(--muted);fo
 </style>
 </head>
 <body><div class="page">
-<header class="banner"><h1>{esc(report_title)}</h1><p>Generated {esc(generated)}</p></header>
+<header class="banner"><h1>{esc(report_title)}</h1><p class="version">{esc(report_suffix)}</p></header>
 <main><div class="section-head"><h2>Overview</h2>{open_link}</div>
+{planned_html}
 <section class="metrics" aria-label="Cycle results">{card_html}</section>
 <dl class="meta">
 <div><dt>Owner</dt><dd>{esc(owner)}</dd></div>
-<div><dt>Cycle</dt><dd>{esc(cycle)}</dd></div>
+<div><dt>Cycle</dt><dd>{cycle_value}</dd></div>
 <div><dt>Result records</dt><dd>{summary['result_records']}</dd></div>
 </dl></main>
 <section class="detail"><h2>Test Case Summary by Component</h2>
@@ -202,7 +240,6 @@ footer{{border-top:1px solid var(--line);padding:14px 28px;color:var(--muted);fo
 <th>Pass Rate</th><th>Failed</th><th>Optimized</th>{other_header}</tr></thead>
 <tbody>{result_rows(summary, bool(other))}</tbody></table></div>
 <h2>Failed Test Cases ({failed + blocked})</h2>{failure_rows(summary)}</section>
-<footer>Pass rate counts only <code>complete.pass</code>. <code>complete.optimized</code> results are shown as Optimized.</footer>
 </div></body></html>'''
 
 
