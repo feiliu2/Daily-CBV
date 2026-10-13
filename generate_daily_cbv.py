@@ -51,12 +51,11 @@ def result_rows(summary, include_other):
     for row in summary["rows"]:
         component = row.get("component") or "(unset)"
         group = groups.setdefault(component, {"total": 0, "pass": 0, "fail": 0,
-                                              "blocked": 0, "optimized": 0, "other": 0,
-                                              "rows": []})
+                              "blocked": 0, "other": 0, "rows": []})
         group["rows"].append(row)
         group["total"] += 1
         if row["status_reason"] == "complete.optimized":
-            group["optimized"] += 1
+            continue
         elif row["bucket"] in group:
             group[row["bucket"]] += 1
         elif row["bucket"] in ("other_complete", "rejected"):
@@ -71,7 +70,11 @@ def result_rows(summary, include_other):
             tc_id = esc(row.get("tc_id"))
             tc_url = f"https://hsdes.intel.com/appstore/article/#/article/{tc_id}"
             title = esc(row.get("title"))
-            status = esc(row.get("status_reason") or row.get("bucket"))
+            status_reason = row.get("status_reason")
+            status = esc(
+                "complete" if status_reason == "complete.optimized"
+                else status_reason or row.get("bucket")
+            )
             test_cases.append(
                 f'<li><a href="{tc_url}" target="_blank" rel="noopener">{tc_id}</a>'
                 f" {title} <small>{status}</small></li>"
@@ -87,7 +90,6 @@ def result_rows(summary, include_other):
             f"<td>{counts['pass']}/{counts['total']}</td>"
             f"<td>{pct(counts['pass'], counts['total'])}</td>"
             f"<td>{counts['fail']}</td>"
-            f"<td>{counts['optimized']}</td>"
             f"{other_cell}"
             "</tr>"
         )
@@ -151,7 +153,6 @@ def build_html(summary, source_url):
         ("Passed", passed, "good"),
         ("Failed", failed, "bad"),
         ("Blocked", blocked, "warn"),
-        ("Optimized", optimized, "neutral"),
         ("Not run", not_run, "neutral"),
     ]
     if other:
@@ -237,7 +238,7 @@ footer{{border-top:1px solid var(--line);padding:14px 28px;color:var(--muted);fo
 </dl></main>
 <section class="detail"><h2>Test Case Summary by Component</h2>
 <div class="table-wrap"><table><thead><tr><th>Component</th><th>Pass / Total</th>
-<th>Pass Rate</th><th>Failed</th><th>Optimized</th>{other_header}</tr></thead>
+<th>Pass Rate</th><th>Failed</th>{other_header}</tr></thead>
 <tbody>{result_rows(summary, bool(other))}</tbody></table></div>
 <h2>Failed Test Cases ({failed + blocked})</h2>{failure_rows(summary)}</section>
 </div></body></html>'''
